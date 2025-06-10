@@ -450,8 +450,17 @@ class DocumentIngestionAgent:
         # Padrão para encontrar seções de itens
         # Busca por padrões como "DESCRIÇÃO", "PRODUTO", "ITEM", etc.
         item_patterns = [
-            r'(?:DESCRIÇÃO|PRODUTO|ITEM)\s*[:\s]*([^\n\r]+)',
-            r'(\d+)\s+([A-Za-z][^\d\n\r]+?)\s+(\d+[,.]?\d*)\s+(\d+[,.]?\d*[,.]?\d{2})'
+            r'(?:DESCRI[ÇC][ÃA]O|PRODUTO|ITEM)[:\s-]*([^\n\r]+)',
+            r'(\d+)\s+([A-Za-z][^\d\n\r]+?)\s+(\d+[,.]?\d*)\s+(\d+[,.]?\d*[,.]?\d{2})',
+            r'QUANTIDADE[:\s-]*(\d+)',
+            r'VALOR\s*UNIT[ÁA]RIO[:\s-]*R?\$?\s*([\d.,]+)',
+            r'CFOP[:\s-]*?(\d{4})',
+            r'NCM[:\s-]*?(\d{8})',
+            r'CST[:\s-]*?(\d{2,3})',
+            r'ICMS[:\s-]*R?\$?\s*([\d.,]+)',
+            r'PIS[:\s-]*R?\$?\s*([\d.,]+)',
+            r'COFINS[:\s-]*R?\$?\s*([\d.,]+)'
+
         ]
         
         for pattern in item_patterns:
@@ -484,19 +493,134 @@ class DocumentIngestionAgent:
                 except (ValueError, IndexError):
                     continue
         
-        # Se não encontrou itens, cria um item genérico
+        # Se não encontrou itens, usa LLM para extrair
         if not itens:
-            itens.append(ItemModel(
-                descricao="Item extraído via OCR",
-                quantidade=1.0,
-                valor_unitario=0.0,
-                cfop_item="",
-                ncm="",
-                cst=""
-            ))
+            itens = self._extract_items_with_llm(text)
         
         return itens
 
+    def _extract_items_with_llm(self, text: str) -> list[ItemModel]:
+        """
+        Extrai itens do texto usando LLM quando a extração tradicional falha
+        
+        Args:
+            text: Texto extraído do documento
+            
+        Returns:
+            Lista de ItemModel extraídos via LLM
+        """
+        log_operation_start(
+            "llm_item_extraction", 
+            agent="DocumentIngestionAgent", 
+            text_length=len(text)
+        )
+        
+        if not self.openai_client:
+            self.logger.error("OpenAI API key não configurada e não foi possível extrair itens via regex.")
+            raise ValueError("Não foi possível extrair itens do documento. Configure OPENAI_API_KEY para análise avançada.")
+        
+        try:
+            # Prompt específico para extração de itens
+            prompt = f"""
+            Analise o seguinte texto extraído de uma Nota Fiscal Eletrônica brasileira e extraia EXCLUSIVAMENTE os itens/produtos que estão REALMENTE listados no documento.
+            
+            TEXTO:
+            {text[:4000]}  # Limita o texto para não exceder tokens
+            
+            Retorne um JSON com a seguinte estrutura:
+            {{
+                "itens": [
+                    {{
+                        "descricao": "descrição EXATA do produto/serviço conforme aparece no documento",
+                        "quantidade": número (ex: 1.0, 2.5),
+                        "valor_unitario": número (ex: 10.99, 250.00),
+                        "cfop_item": "código CFOP do item (se encontrado)",
+                        "ncm": "código NCM do item (se encontrado)",
+                        "cst": "código CST do item (se encontrado)"
+                    }}
+                ]
+            }}
+            
+            INSTRUÇÕES CRÍTICAS:
+            - Extraia APENAS itens que REALMENTE existem no documento
+            - NÃO invente ou crie itens genéricos
+            - Use descrições EXATAS conforme aparecem no texto
+            - Se não encontrar quantidade explícita, use 1.0
+            - Se não encontrar valor unitário, use 0.0
+            - Para códigos não encontrados, use string vazia ""
+            - Retorne APENAS o JSON válido, sem texto adicional
+            - Se NÃO encontrar nenhum item real no documento, retorne: {{"itens": []}}
+            - IMPORTANTE: Prefira uma lista vazia a criar itens fictícios
+            """
+            
+            self.logger.info("Chamando LLM para extrair itens do texto")
+            
+            # Chama a API do GPT
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",  # Modelo mais econômico para texto
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                max_tokens=1500,
+                temperature=0.1  # Baixa temperatura para respostas consistentes
+            )
+            
+            # Extrai o JSON da resposta
+            response_text = response.choices[0].message.content.strip()
+            self.logger.info("Resposta recebida da LLM para extração de itens")
+            
+            # Remove possíveis marcadores de código
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            
+            # Parse do JSON
+            extracted_data = json.loads(response_text)
+            
+            # Converte para ItemModel
+            itens = []
+            for item_data in extracted_data.get('itens', []):
+                try:
+                    item = ItemModel(
+                        descricao=item_data.get('descricao', 'Item extraído via LLM'),
+                        quantidade=float(item_data.get('quantidade', 1.0)),
+                        valor_unitario=float(item_data.get('valor_unitario', 0.0)),
+                        cfop_item=item_data.get('cfop_item', ''),
+                        ncm=item_data.get('ncm', ''),
+                        cst=item_data.get('cst', '')
+                    )
+                    itens.append(item)
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"Erro ao processar item extraído via LLM: {e}")
+                    continue
+            
+            # Se não encontrou itens, a LLM determinou que não há itens reais no documento
+            if not itens:
+                self.logger.warning("LLM não encontrou itens reais no documento - retornando lista vazia")
+            
+            log_operation_success(
+                "llm_item_extraction",
+                agent="DocumentIngestionAgent",
+                text_length=len(text),
+                items_extracted=len(itens),
+                model_used="gpt-4o-mini"
+            )
+            
+            return itens
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Erro ao fazer parse da resposta da LLM: {e}")
+            log_operation_error("llm_item_extraction", e, agent="DocumentIngestionAgent")
+            raise ValueError(f"Erro ao processar resposta da LLM para extração de itens: {str(e)}")
+            
+        except Exception as e:
+            self.logger.error(f"Erro na extração de itens via LLM: {e}")
+            log_operation_error("llm_item_extraction", e, agent="DocumentIngestionAgent")
+            raise ValueError(f"Erro na extração de itens via LLM: {str(e)}")
 
     def _process_image_nfe(self, image_content: bytes, file_type: str) -> DocumentoFiscalModel:
         """
@@ -563,7 +687,9 @@ class DocumentIngestionAgent:
             - Para CNPJs, remova pontos, barras e hífens
             - Para datas, use formato YYYY-MM-DD
             - Se algum campo não for encontrado, use string vazia "" ou 0 para números
-            - Para itens, inclua todos os produtos/serviços listados na nota
+            - Para itens, inclua APENAS os produtos/serviços que estão REALMENTE visíveis na nota
+            - NÃO invente ou crie itens genéricos
+            - Se não encontrar itens reais, retorne: "itens": []
             """
             
             self.logger.info("Enviando imagem para análise via GPT-4 Vision")
@@ -646,29 +772,23 @@ class DocumentIngestionAgent:
         Returns:
             DocumentoFiscalModel estruturado
         """
-        # Processa itens
+        # Processa itens - apenas os reais extraídos da imagem
         itens = []
         for item_data in data.get('itens', []):
-            item = ItemModel(
-                descricao=item_data.get('descricao', ''),
-                quantidade=float(item_data.get('quantidade', 0)),
-                valor_unitario=float(item_data.get('valor_unitario', 0)),
-                cfop_item=item_data.get('cfop_item', ''),
-                ncm=item_data.get('ncm', ''),
-                cst=item_data.get('cst', '')
-            )
-            itens.append(item)
+            # Só adiciona se tem descrição válida
+            descricao = item_data.get('descricao', '').strip()
+            if descricao:
+                item = ItemModel(
+                    descricao=descricao,
+                    quantidade=float(item_data.get('quantidade', 1.0)),
+                    valor_unitario=float(item_data.get('valor_unitario', 0.0)),
+                    cfop_item=item_data.get('cfop_item', ''),
+                    ncm=item_data.get('ncm', ''),
+                    cst=item_data.get('cst', '')
+                )
+                itens.append(item)
         
-        # Se não há itens, cria um genérico
-        if not itens:
-            itens.append(ItemModel(
-                descricao="Item extraído via LLM Vision",
-                quantidade=1.0,
-                valor_unitario=float(data.get('valor_total', 0)),
-                cfop_item=data.get('cfop', ''),
-                ncm=data.get('ncm', ''),
-                cst=data.get('cst', '')
-            ))
+        # Se não há itens reais, mantém lista vazia - não cria itens fictícios
         
         # Cria modelo de impostos
         impostos = ImpostosModel(

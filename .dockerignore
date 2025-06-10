@@ -1,0 +1,51 @@
+# Arquivos e diretórios a serem ignorados pelo Docker
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Ambiente virtual
+.venv/
+venv/
+ENV/
+env/
+
+# Arquivos de configuração local
+.env
+.env.local
+
+# Logs
+*.log
+
+# Cache do sistema
+.DS_Store
+Thumbs.db
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# Arquivos de backup
+*.bak
+*.backup
+
+# Arquivos de teste
+test_*.py
+*_test.py
+
