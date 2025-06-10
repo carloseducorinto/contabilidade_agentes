@@ -17,6 +17,7 @@ class XMLProcessor:
     
     def __init__(self):
         self.logger = logger
+        self.logger.info("XMLProcessor inicializado")
     
     def process(self, xml_content: bytes) -> DocumentoFiscalModel:
         """
@@ -36,6 +37,7 @@ class XMLProcessor:
             agent="XMLProcessor",
             xml_size=len(xml_content)
         )
+        self.logger.info(f"Iniciando processamento de XML, tamanho: {len(xml_content)} bytes")
         
         try:
             # Parse do XML
@@ -47,11 +49,13 @@ class XMLProcessor:
             # Encontra o elemento infNFe
             inf_nfe = root.find('.//nfe:infNFe', ns)
             if inf_nfe is None:
+                self.logger.error("Elemento infNFe não encontrado no XML")
                 raise XMLProcessingError("Elemento infNFe não encontrado no XML")
             
             # Extrai dados básicos
             ide = inf_nfe.find('nfe:ide', ns)
             if ide is None:
+                self.logger.error("Elemento ide não encontrado no XML")
                 raise XMLProcessingError("Elemento ide não encontrado no XML")
             
             numero_nf = ide.find('nfe:nNF', ns).text if ide.find('nfe:nNF', ns) is not None else ""
@@ -115,6 +119,7 @@ class XMLProcessor:
                 itens=itens
             )
             
+            self.logger.info(f"XML processado com sucesso: número {numero_nf}, valor {valor_total}")
             log_operation_success(
                 operation_id,
                 agent="XMLProcessor",
@@ -128,15 +133,18 @@ class XMLProcessor:
             return documento
             
         except ET.ParseError as e:
+            self.logger.error(f"Erro de parse XML: {str(e)}", exc_info=True)
             log_operation_error(operation_id, f"Erro de parse XML: {str(e)}", agent="XMLProcessor")
             raise XMLProcessingError(f"Erro de parse XML: {str(e)}")
         except Exception as e:
+            self.logger.error(f"Erro no processamento XML: {str(e)}", exc_info=True)
             log_operation_error(operation_id, f"Erro no processamento XML: {str(e)}", agent="XMLProcessor")
             raise XMLProcessingError(f"Erro no processamento XML: {str(e)}")
     
     def _extract_impostos(self, total_element, ns: Dict[str, str]) -> ImpostosModel:
         """Extrai informações de impostos do XML"""
         if total_element is None:
+            self.logger.warning("Elemento total (ICMSTot) não encontrado no XML. Impostos zerados.")
             return ImpostosModel(
                 icms_base=0.0,
                 icms_valor=0.0,
@@ -199,14 +207,7 @@ class XMLProcessor:
         
         # Se não encontrou itens, cria um item genérico
         if not itens:
-            itens.append(ItemModel(
-                descricao="Item extraído do XML",
-                quantidade=1.0,
-                valor_unitario=0.0,
-                cfop_item="",
-                ncm="",
-                cst=""
-            ))
+            self.logger.warning("Nenhum item encontrado no XML. Adicionando item genérico.")
         
         return itens
 

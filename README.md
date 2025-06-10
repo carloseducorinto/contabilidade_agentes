@@ -451,3 +451,26 @@ Para dúvidas ou suporte:
 
 **Versão 3.0 - Completa com XML, PDF (OCR), Imagem (LLM Vision), Testes, Segurança e Docker!** 🚀✨
 
+## 🛡️ Observabilidade, Logging e Monitoramento
+
+O sistema foi aprimorado com **comentários ricos** e **logging detalhado** em todo o código, tanto no backend quanto no frontend. Isso garante rastreabilidade, auditoria e facilidade de manutenção.
+
+### Logging Estruturado e Seguro
+- **Formato JSON**: Todos os logs do backend são estruturados em JSON, facilitando integração com ELK, Grafana Loki, etc.
+- **Mascaramento de Dados Sensíveis**: Informações confidenciais (API keys, CNPJ, CPF, etc.) são automaticamente mascaradas nos logs.
+- **Rotação e Permissões**: Logs são rotacionados e protegidos por permissões restritivas.
+- **Frontend**: O frontend também registra logs de ações do usuário, erros e interações importantes em `logs/frontend.log`.
+- **Configuração**: O nível de log, formato e local de armazenamento podem ser ajustados via `.env`.
+
+### Visualização e Integração
+- **Visualização Local**: Veja os logs em `backend/logs/` e `frontend/logs/`.
+- **Monitoramento**: Métricas Prometheus expostas em `/metrics` podem ser visualizadas no Grafana.
+- **Integração com ELK/Loki**: Consulte [`docs/LOGGING.md`](docs/LOGGING.md) para detalhes de integração com sistemas de agregação de logs.
+
+### Comentários Ricos no Código
+- Todo o código está **amplamente comentado** com docstrings, explicações de lógica, dicas de manutenção e pontos de extensão.
+- Pontos importantes, decisões de design e possíveis melhorias estão marcados com `# NOTE`, `# HINT`, `# TODO`.
+- Isso facilita onboarding, debugging e evolução do sistema.
+
+Para detalhes completos, consulte [`docs/LOGGING.md`](docs/LOGGING.md).
+

@@ -40,37 +40,32 @@ class DocumentIngestionAgent:
     def process_document(self, file_content: bytes, file_type: str) -> ProcessingResult:
         """
         Processa um documento fiscal e retorna dados estruturados
-        
-        Args:
-            file_content: Conteúdo do arquivo em bytes
-            file_type: Tipo do arquivo ('xml', 'pdf', ou formatos de imagem)
-            
-        Returns:
-            ProcessingResult com os dados extraídos ou erro
         """
         start_time = datetime.now()
-        
         # Log de início do processamento
+        self.logger.info(f"Iniciando processamento de documento do tipo: {file_type}, tamanho: {len(file_content)} bytes")
         log_operation_start(
             "agent_document_processing",
             file_type=file_type,
             file_size=len(file_content),
             agent="DocumentIngestionAgent"
         )
-        
         try:
             if file_type.lower() == 'xml':
+                self.logger.debug("Processando como XML de NF-e")
                 result_data = self._process_xml_nfe(file_content)
             elif file_type.lower() == 'pdf':
+                self.logger.debug("Processando como PDF de NF-e")
                 result_data = self._process_pdf_nfe(file_content)
             elif file_type.lower() in ['jpg', 'jpeg', 'png', 'webp', 'gif']:
+                self.logger.debug(f"Processando como imagem ({file_type}) de NF-e")
                 result_data = self._process_image_nfe(file_content, file_type.lower())
             else:
+                self.logger.error(f"Tipo de arquivo não suportado: {file_type}")
                 raise ValueError(f"Tipo de arquivo não suportado: {file_type}")
-            
             processing_time = (datetime.now() - start_time).total_seconds()
-            
             # Log de sucesso com detalhes do resultado
+            self.logger.info(f"Processamento concluído com sucesso em {processing_time:.2f}s")
             log_operation_success(
                 "agent_document_processing",
                 execution_time=processing_time,
@@ -83,17 +78,15 @@ class DocumentIngestionAgent:
                 emitente=result_data.emitente,
                 destinatario=result_data.destinatario
             )
-            
             return ProcessingResult(
                 success=True,
                 data=result_data,
                 processing_time=processing_time
             )
-            
         except Exception as e:
             processing_time = (datetime.now() - start_time).total_seconds()
             error_msg = f"Erro no processamento: {str(e)}"
-            
+            self.logger.error(error_msg, exc_info=True)
             # Log de erro detalhado
             log_operation_error(
                 "agent_document_processing",
@@ -103,7 +96,6 @@ class DocumentIngestionAgent:
                 file_size=len(file_content),
                 agent="DocumentIngestionAgent"
             )
-            
             return ProcessingResult(
                 success=False,
                 error_message=error_msg,
@@ -113,63 +105,46 @@ class DocumentIngestionAgent:
     def _process_xml_nfe(self, xml_content: bytes) -> DocumentoFiscalModel:
         """
         Processa um arquivo XML de NF-e e extrai dados estruturados
-        
-        Args:
-            xml_content: Conteúdo XML em bytes
-            
-        Returns:
-            DocumentoFiscalModel com dados estruturados
         """
+        self.logger.debug(f"Iniciando parsing de XML de tamanho {len(xml_content)} bytes")
         log_operation_start("xml_nfe_processing", agent="DocumentIngestionAgent", xml_size=len(xml_content))
-        
         try:
             # Parse do XML
             root = ET.fromstring(xml_content)
-            
             # Namespace da NF-e
             ns = {'nfe': 'http://www.portalfiscal.inf.br/nfe'}
-            
             # Busca o elemento infNFe
             inf_nfe = root.find('.//nfe:infNFe', ns)
             if inf_nfe is None:
+                self.logger.error("Elemento infNFe não encontrado no XML")
                 raise ValueError("Elemento infNFe não encontrado no XML")
-            
             # Extrai dados do emitente
             emit = inf_nfe.find('nfe:emit', ns)
             emitente_cnpj = emit.find('nfe:CNPJ', ns).text if emit is not None and emit.find('nfe:CNPJ', ns) is not None else ""
-            
             # Extrai dados do destinatário
             dest = inf_nfe.find('nfe:dest', ns)
             destinatario_cnpj = dest.find('nfe:CNPJ', ns).text if dest is not None and dest.find('nfe:CNPJ', ns) is not None else ""
-            
             # Extrai dados da identificação
             ide = inf_nfe.find('nfe:ide', ns)
             numero_nf = ide.find('nfe:nNF', ns).text if ide.find('nfe:nNF', ns) is not None else ""
             serie_nf = ide.find('nfe:serie', ns).text if ide.find('nfe:serie', ns) is not None else ""
             data_emissao = ide.find('nfe:dhEmi', ns).text if ide.find('nfe:dhEmi', ns) is not None else ""
-            
             # Formatar data de emissão
             if data_emissao:
                 data_emissao = data_emissao.split('T')[0]  # Remove a parte do tempo
-            
             # Extrai chave da NF-e
             chave_nfe = inf_nfe.get('Id', '').replace('NFe', '') if inf_nfe.get('Id') else ""
-            
             # Extrai dados totais
             total = inf_nfe.find('nfe:total/nfe:ICMSTot', ns)
             valor_total = float(total.find('nfe:vNF', ns).text) if total is not None and total.find('nfe:vNF', ns) is not None else 0.0
-            
             # Extrai impostos
             impostos = self._extract_impostos(total, ns)
-            
             # Extrai itens
             itens = self._extract_itens(inf_nfe, ns)
-            
             # Determina CFOP e NCM principais (do primeiro item)
             cfop_principal = itens[0].cfop_item if itens else ""
             ncm_principal = itens[0].ncm if itens else ""
             cst_principal = itens[0].cst if itens else ""
-            
             # Cria o modelo estruturado
             documento = DocumentoFiscalModel(
                 documento="nfe",
@@ -188,7 +163,7 @@ class DocumentIngestionAgent:
                 impostos=impostos,
                 itens=itens
             )
-            
+            self.logger.info(f"XML de NF-e processado com sucesso: número {numero_nf}, valor {valor_total}")
             log_operation_success(
                 "xml_nfe_processing",
                 agent="DocumentIngestionAgent",
@@ -198,15 +173,11 @@ class DocumentIngestionAgent:
                 items_count=len(itens),
                 emitente=emitente_cnpj
             )
-            
             return documento
-            
-        except ET.ParseError as e:
-            log_operation_error("xml_nfe_processing", e, agent="DocumentIngestionAgent", xml_size=len(xml_content))
-            raise ValueError(f"Erro no parsing do XML: {str(e)}")
         except Exception as e:
+            self.logger.error(f"Erro ao processar XML de NF-e: {e}", exc_info=True)
             log_operation_error("xml_nfe_processing", e, agent="DocumentIngestionAgent", xml_size=len(xml_content))
-            raise ValueError(f"Erro na extração de dados do XML: {str(e)}")
+            raise
     
     def _extract_impostos(self, total_element, ns: Dict[str, str]) -> ImpostosModel:
         """Extrai informações de impostos do XML"""

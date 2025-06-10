@@ -23,6 +23,10 @@ settings = get_settings()
 
 # Configuração do logging centralizado
 logger = get_logger("main")
+logger.info("Iniciando aplicação FastAPI com configurações carregadas", extra={
+    "environment": settings.environment,
+    "version": settings.app_version
+})
 
 # Inicialização da aplicação FastAPI
 app = FastAPI(
@@ -39,37 +43,23 @@ app = FastAPI(
 # app.middleware("http")(metrics_middleware)  # Temporarily disabled
 
 # Inicialização do serviço de documentos
-document_service = AsyncDocumentService(openai_api_key=settings.openai_api_key)
-
-# @app.on_event("startup")
-# async def startup_event():
-#     """Evento de inicialização da aplicação"""
-#     # Garante que o diretório de logs existe
-#     import pathlib
-#     pathlib.Path("logs").mkdir(exist_ok=True)
-#     
-#     log_operation_start("application_startup", agent="main", 
-#                         openai_configured=bool(settings.openai_api_key),
-#                         api_version=settings.app_version)
-#     
-#     # Inicia a tarefa de limpeza de cache em background
-#     await start_cache_cleanup_task()
-#     
-#     log_operation_success("application_startup", agent="main", 
-#                           openai_configured=bool(settings.openai_api_key),
-#                           api_version=settings.app_version)
-
+try:
+    document_service = AsyncDocumentService(openai_api_key=settings.openai_api_key)
+    logger.info("Serviço de documentos inicializado com sucesso")
+except Exception as e:
+    logger.critical(f"Falha ao inicializar AsyncDocumentService: {e}")
+    raise
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Evento de desligamento da aplicação"""
     logger.info("Aplicação desligando...")
-    # Aqui você pode adicionar lógica para fechar conexões, etc.
-
+    # TODO: Adicionar lógica para fechar conexões externas, liberar recursos, etc.
 
 @app.get("/")
 async def root():
     """Endpoint de status da API"""
+    logger.debug("Recebida requisição GET / (root)")
     return {
         "message": settings.app_name,
         "status": "ativo",
@@ -77,10 +67,10 @@ async def root():
         "environment": settings.environment
     }
 
-
 @app.get("/health")
 async def health_check():
     """Endpoint de verificação de saúde da API"""
+    logger.debug("Recebida requisição GET /health (health check)")
     return {
         "status": "healthy", 
         "timestamp": time.time(),
@@ -89,86 +79,73 @@ async def health_check():
         "version": settings.app_version
     }
 
-
 @app.post("/process-document", response_model=ProcessingResult)
 async def process_document(file: UploadFile = File(...), request: Request = None, background_tasks: BackgroundTasks = None):
     """
     Processa um documento fiscal (XML, PDF ou Imagem) e retorna dados estruturados
-    
-    Args:
-        file: Arquivo de documento fiscal (NF-e XML, PDF ou imagem JPG/PNG)
-        request: Objeto da requisição FastAPI
-        background_tasks: Objeto para tarefas em background
-        
-    Returns:
-        ProcessingResult com dados estruturados ou erro
     """
     request_id = getattr(request.state, 'request_id', 'unknown') if request else 'unknown'
-    
+    logger.info(f"Recebida requisição POST /process-document para arquivo: {file.filename}", extra={"request_id": request_id})
     operation_id = log_operation_start("process_document_endpoint", agent="main", request_id=request_id, file_name=file.filename)
-    
     try:
         file_content = await file.read()
         file_type = file.filename.split(".")[-1].lower() if file.filename else "unknown"
-        
+        logger.debug(f"Arquivo recebido: {file.filename} ({file_type}), tamanho: {len(file_content)} bytes")
         result = await document_service.process_document(
             file_content=file_content,
             file_type=file_type,
             filename=file.filename,
             background_tasks=background_tasks
         )
-        
         if result.success:
-            log_operation_success(operation_id, agent="main", request_id=request_id, 
-                                  file_name=file.filename, status="success")
+            logger.info(f"Processamento bem-sucedido para {file.filename}", extra={"request_id": request_id})
+            log_operation_success(operation_id, agent="main", request_id=request_id, file_name=file.filename, status="success")
             return result
         else:
-            log_operation_error(operation_id, result.error, agent="main", request_id=request_id, 
-                                file_name=file.filename, status="failed")
+            logger.warning(f"Processamento falhou para {file.filename}: {result.error}", extra={"request_id": request_id})
+            log_operation_error(operation_id, result.error, agent="main", request_id=request_id, file_name=file.filename, status="failed")
             raise HTTPException(status_code=422, detail=result.error)
-            
     except HTTPException as e:
-        log_operation_error(operation_id, str(e.detail), agent="main", request_id=request_id, 
-                            file_name=file.filename, status="failed")
+        logger.error(f"HTTPException ao processar {file.filename}: {e.detail}", extra={"request_id": request_id})
+        log_operation_error(operation_id, str(e.detail), agent="main", request_id=request_id, file_name=file.filename, status="failed")
         raise e
     except Exception as e:
-        log_operation_error(operation_id, str(e), agent="main", request_id=request_id, 
-                            file_name=file.filename, status="failed")
+        logger.critical(f"Erro inesperado ao processar {file.filename}: {e}", extra={"request_id": request_id})
+        log_operation_error(operation_id, str(e), agent="main", request_id=request_id, file_name=file.filename, status="failed")
         raise HTTPException(status_code=500, detail=f"Erro interno do servidor: {str(e)}")
-
 
 @app.get("/supported-formats", response_model=SupportedFormatsResponse)
 async def get_supported_formats(request: Request):
     """Retorna os formatos de documento suportados"""
     request_id = getattr(request.state, 'request_id', 'unknown')
-    
+    logger.info("Recebida requisição GET /supported-formats", extra={"request_id": request_id})
     log_operation_start("supported_formats_endpoint", agent="main", request_id=request_id)
-    
     formats_info = await document_service.get_supported_formats()
-    
-    log_operation_success("supported_formats_endpoint", agent="main", request_id=request_id,
-                          formats_count=len(formats_info["formats"]))
-    
+    logger.debug(f"Formatos suportados retornados: {formats_info['formats']}")
+    log_operation_success("supported_formats_endpoint", agent="main", request_id=request_id, formats_count=len(formats_info["formats"]))
     return SupportedFormatsResponse(**formats_info)
-
 
 @app.get("/cache/clear")
 async def clear_app_cache(request: Request):
     """Limpa o cache da aplicação"""
     request_id = getattr(request.state, 'request_id', 'unknown')
+    logger.info("Recebida requisição GET /cache/clear", extra={"request_id": request_id})
     log_operation_start("clear_cache_endpoint", agent="main", request_id=request_id)
-    
     await clear_cache()
-    
+    logger.info("Cache limpo com sucesso", extra={"request_id": request_id})
     log_operation_success("clear_cache_endpoint", agent="main", request_id=request_id)
     return {"message": "Cache limpo com sucesso!", "request_id": request_id}
-
 
 # Configura o endpoint de métricas Prometheus
 setup_metrics_endpoint(app)
 
+# NOTE: O evento de startup está comentado, mas pode ser reativado para inicializações avançadas
+# @app.on_event("startup")
+# async def startup_event():
+#     ...
 
 if __name__ == "__main__":
+    logger.info("Iniciando servidor Uvicorn via main.py (__main__)")
     uvicorn.run(
         "main:app",
         host=settings.host,

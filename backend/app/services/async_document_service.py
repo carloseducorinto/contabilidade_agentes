@@ -50,6 +50,7 @@ class AsyncDocumentService:
         
         # Semáforo para controlar concorrência
         self.processing_semaphore = asyncio.Semaphore(settings.max_concurrent_processing)
+        self.logger.info("AsyncDocumentService inicializado com processadores e semáforo de concorrência")
     
     async def process_document(
         self, 
@@ -79,6 +80,7 @@ class AsyncDocumentService:
         )
         
         start_time = time.time()
+        self.logger.info(f"Iniciando processamento assíncrono: {filename} ({file_type})")
         
         try:
             # Validações
@@ -116,6 +118,8 @@ class AsyncDocumentService:
                     documento.numero_documento
                 )
             
+            self.logger.info(f"Processamento assíncrono concluído: {filename} em {processing_time:.2f}s")
+            
             log_operation_success(
                 operation_id,
                 agent="AsyncDocumentService",
@@ -130,6 +134,8 @@ class AsyncDocumentService:
             
         except Exception as e:
             processing_time = time.time() - start_time
+            
+            self.logger.error(f"Erro no processamento assíncrono: {filename} - {e}", exc_info=True)
             
             log_operation_error(
                 operation_id, 
@@ -169,23 +175,27 @@ class AsyncDocumentService:
     
     async def _process_document_internal(self, file_content: bytes, file_type: str):
         """Processa documento internamente, escolhendo o processador apropriado"""
+        self.logger.debug(f"Selecionando processador para tipo: {file_type}")
         
         # Processadores assíncronos (PDF, imagens via LLM)
         if file_type.lower() in self.async_processors:
             processor = self.async_processors[file_type.lower()]
             if file_type.lower() == 'pdf':
+                self.logger.debug("Usando processador assíncrono para PDF")
                 return await processor.process(file_content)
             else:
+                self.logger.debug(f"Usando processador assíncrono para imagem: {file_type}")
                 return await processor.process(file_content, file_type)
         
-        # Processadores síncronos (XML, PDF)
+        # Processadores síncronos (XML)
         elif file_type.lower() in self.sync_processors:
             processor = self.sync_processors[file_type.lower()]
-            # Executa em thread pool para não bloquear o event loop
+            self.logger.debug("Usando processador síncrono para XML (executando em thread pool)")
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, processor.process, file_content)
         
         else:
+            self.logger.error(f"Processador não encontrado para tipo: {file_type}")
             raise UnsupportedFileTypeError(f"Processador não encontrado para tipo: {file_type}")
     
     async def _validate_file(self, file_content: bytes, file_type: str) -> None:
@@ -193,6 +203,7 @@ class AsyncDocumentService:
         
         # Verifica tamanho do arquivo
         if len(file_content) > settings.max_file_size:
+            self.logger.warning(f"Arquivo excede o tamanho máximo permitido: {len(file_content)} bytes")
             raise FileSizeExceededError(
                 f"Arquivo muito grande. Tamanho máximo: {settings.max_file_size / (1024*1024):.1f}MB",
                 details={"file_size": len(file_content), "max_size": settings.max_file_size}

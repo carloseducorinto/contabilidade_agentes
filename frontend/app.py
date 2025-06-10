@@ -159,31 +159,31 @@ st.markdown("""
 
 
 class ContabilidadeApp:
-    """Aplicação principal do sistema de contabilidade com IA"""
+    """
+    Aplicação principal do sistema de contabilidade com IA
+    """
     
     def __init__(self):
         # Use environment variable for backend URL, fallback to localhost for development
         self.api_base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         self.setup_logging()
         self.setup_session_state()
-        
         # Log the backend URL being used for debugging
         self.log_user_action("app_initialization", {
             "backend_url": self.api_base_url,
             "environment": os.getenv("ENVIRONMENT", "unknown")
         })
+        self.logger.info(f"Frontend iniciado. Backend URL: {self.api_base_url}")
         
     def setup_session_state(self):
         """Inicializa o estado da sessão"""
         if 'session_id' not in st.session_state:
             st.session_state.session_id = str(uuid.uuid4())
-        
+            self.logger.debug(f"Nova sessão iniciada: {st.session_state.session_id}")
         if 'processing_history' not in st.session_state:
             st.session_state.processing_history = []
-        
         if 'last_result' not in st.session_state:
             st.session_state.last_result = None
-            
         if 'api_health_cache' not in st.session_state:
             st.session_state.api_health_cache = {'status': None, 'timestamp': 0}
         
@@ -207,77 +207,36 @@ class ContabilidadeApp:
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)
             
-        self.logger.info("Frontend da aplicação de contabilidade inicializado")
+        self.logger.info("Sistema de logging do frontend configurado.")
         
     def log_user_action(self, action: str, details: Optional[Dict] = None):
-        """Log de ações do usuário"""
-        log_data = {
-            "action": action,
-            "session_id": st.session_state.session_id,
-            "timestamp": datetime.now().isoformat(),
-            **(details or {})
-        }
-        
-        self.logger.info(f"Ação do usuário: {action}", extra=log_data)
+        """Registra uma ação do usuário no log"""
+        msg = f"Ação do usuário: {action}"
+        if details:
+            msg += f" | Detalhes: {json.dumps(details, ensure_ascii=False)}"
+        self.logger.info(msg)
         
     def check_api_health(self, use_cache: bool = True) -> Dict[str, Any]:
-        """Verifica se a API está funcionando com cache"""
-        current_time = time.time()
+        """Verifica a saúde da API do backend"""
+        now = time.time()
         cache = st.session_state.api_health_cache
-        
-        # Usa cache se disponível e não expirado (30 segundos)
-        if use_cache and cache['status'] and (current_time - cache['timestamp']) < 30:
+        if use_cache and cache['status'] is not None and now - cache['timestamp'] < 10:
+            self.logger.debug("Usando cache de health check da API")
             return cache['status']
-        
         try:
-            self.logger.info("Verificando saúde da API")
-            response = requests.get(f"{self.api_base_url}/health", timeout=5)
-            
-            if response.status_code == 200:
-                health_data = response.json()
-                result = {
-                    'healthy': True,
-                    'data': health_data,
-                    'error': None
-                }
-                self.logger.info("API está funcionando corretamente")
-            else:
-                result = {
-                    'healthy': False,
-                    'data': None,
-                    'error': f"Status code: {response.status_code}"
-                }
-                self.logger.error(f"API retornou status code: {response.status_code}")
-                
-        except requests.exceptions.ConnectionError:
-            result = {
-                'healthy': False,
-                'data': None,
-                'error': "Não foi possível conectar à API. Verifique se o backend está rodando."
-            }
-            self.logger.error("Erro de conexão com a API")
-        except requests.exceptions.Timeout:
-            result = {
-                'healthy': False,
-                'data': None,
-                'error': "Timeout na conexão com a API. O servidor pode estar sobrecarregado."
-            }
-            self.logger.error("Timeout na conexão com a API")
+            self.logger.info(f"Verificando saúde da API em {self.api_base_url}/health")
+            resp = requests.get(f"{self.api_base_url}/health", timeout=5)
+            resp.raise_for_status()
+            health = resp.json()
+            cache['status'] = health
+            cache['timestamp'] = now
+            self.logger.info("API backend saudável")
+            return health
         except Exception as e:
-            result = {
-                'healthy': False,
-                'data': None,
-                'error': f"Erro inesperado: {str(e)}"
-            }
-            self.logger.error(f"Erro inesperado ao verificar API: {str(e)}")
-        
-        # Atualiza cache
-        st.session_state.api_health_cache = {
-            'status': result,
-            'timestamp': current_time
-        }
-        
-        return result
+            self.logger.error(f"Falha ao verificar saúde da API: {e}")
+            cache['status'] = {'status': 'unhealthy', 'error': str(e)}
+            cache['timestamp'] = now
+            return cache['status']
     
     def get_error_suggestions(self, error_message: str, file_type: str) -> List[str]:
         """Retorna sugestões baseadas no tipo de erro"""
