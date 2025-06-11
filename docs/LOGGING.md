@@ -1,297 +1,121 @@
-# Sistema de Logging - Contabilidade com Agentes de IA
+# 📝 Sistema de Logging e Monitoramento
 
-## Visão Geral
+Este documento detalha o sistema de logging implementado na solução de contabilidade com agentes de IA, com foco em segurança, estrutura e facilidade de integração com ferramentas de monitoramento.
 
-O sistema implementa um sistema de logging abrangente e estruturado em JSON para monitoramento completo da aplicação, incluindo backend (FastAPI) e frontend (Streamlit).
+## 📊 Estrutura do Logging
 
-## Características Principais
+O sistema utiliza a biblioteca `logging` padrão do Python, configurada para gerar logs estruturados em formato JSON. Isso facilita a ingestão e análise por sistemas de gerenciamento de logs centralizados (LMS) como ELK Stack (Elasticsearch, Logstash, Kibana) ou Grafana Loki.
 
-### ✅ **Logging Estruturado em JSON**
-- Todos os logs são formatados em JSON para facilitar análise e parsing
-- Campos padronizados: timestamp, level, logger, message, module, function, line
-- Campos extras contextuais: request_id, operation, execution_time, file_info, etc.
+### Formato JSON
 
-### ✅ **Logging Centralizado**
-- Configuração centralizada em `backend/app/logging_config.py`
-- Logger global acessível em toda a aplicação
-- Funções de conveniência para operações comuns
+Cada linha de log é um objeto JSON contendo informações relevantes sobre o evento. O formato inclui campos como:
 
-### ✅ **Middleware Automático**
-- Logging automático de todas as requisições HTTP
-- Request ID único para rastreamento
-- Tempo de execução de cada endpoint
-- Headers de resposta com informações de debug
+- `timestamp`: Data e hora exatas do evento.
+- `level`: Nível do log (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+- `agent` / `module`: Nome do agente ou módulo que gerou o log.
+- `message`: Descrição textual do evento.
+- `operation_id`: ID único para rastrear operações de processamento de documentos.
+- `file_type`: Tipo do arquivo processado (xml, pdf, image).
+- `processing_time`: Tempo levado para processar um documento (em segundos).
+- `error`: Detalhes do erro, se aplicável.
+- `error_code`: Código customizado do erro, se aplicável.
+- `extra`: Campos adicionais específicos do evento.
 
-### ✅ **Logging por Componente**
-- **Backend API**: Logs de requisições, respostas, processamento
-- **Document Agent**: Logs detalhados de processamento de documentos
-- **Frontend**: Logs de ações do usuário e interações
+**Exemplo de Log:**
 
-## Estrutura de Arquivos
-
-```
-logs/
-├── contabilidade_agentes.log    # Logs do backend
-└── frontend.log                 # Logs do frontend
-
-backend/app/
-├── logging_config.py           # Configuração centralizada
-├── middleware.py               # Middleware de logging
-└── main.py                     # Endpoints com logging
-
-frontend/
-└── app.py                      # Frontend com logging
-```
-
-## Tipos de Logs
-
-### 1. **Logs de Operação**
 ```json
 {
-  "timestamp": "2025-06-09T19:30:45.123456",
+  "timestamp": "2025-06-10 10:30:00,123",
   "level": "INFO",
-  "logger": "contabilidade_agentes.main",
-  "message": "Iniciando operação: document_processing",
-  "operation": "document_processing",
-  "request_id": "uuid-1234-5678",
-  "file_name": "exemplo.pdf",
-  "file_size": 2048,
-  "file_type": "pdf"
+  "module": "document_service",
+  "message": "Iniciando processamento de documento",
+  "operation_id": "abc-123",
+  "file_type": "xml"
 }
 ```
 
-### 2. **Logs de API**
-```json
-{
-  "timestamp": "2025-06-09T19:30:45.123456",
-  "level": "INFO",
-  "logger": "contabilidade_agentes.middleware",
-  "message": "API Request: POST /process-document",
-  "operation": "api_request",
-  "request_id": "uuid-1234-5678",
-  "endpoint": "/process-document",
-  "method": "POST",
-  "user_agent": "streamlit/1.0"
-}
-```
+## 🔒 Segurança e Mascaramento de Dados
 
-### 3. **Logs de Processamento**
-```json
-{
-  "timestamp": "2025-06-09T19:30:47.456789",
-  "level": "INFO",
-  "logger": "contabilidade_agentes.DocumentIngestionAgent",
-  "message": "Operação concluída com sucesso: xml_nfe_processing",
-  "operation": "xml_nfe_processing",
-  "execution_time": 2.34,
-  "processing_result": "success",
-  "agent": "DocumentIngestionAgent",
-  "document_type": "nfe",
-  "valor_total": 1500.00,
-  "items_count": 3
-}
-```
+A segurança dos dados sensíveis nos logs é uma prioridade. O sistema implementa um mecanismo de mascaramento automático para evitar que informações confidenciais sejam expostas.
 
-### 4. **Logs de Erro**
-```json
-{
-  "timestamp": "2025-06-09T19:30:48.789012",
-  "level": "ERROR",
-  "logger": "contabilidade_agentes.DocumentIngestionAgent",
-  "message": "Erro na operação: pdf_nfe_processing - Unable to get page count",
-  "operation": "pdf_nfe_processing",
-  "execution_time": 1.23,
-  "processing_result": "error",
-  "exception": {
-    "type": "ValueError",
-    "message": "Unable to get page count. Is poppler installed and in PATH?",
-    "traceback": "..."
-  }
-}
-```
+### DataMasker
 
-### 5. **Logs do Frontend**
-```json
-{
-  "timestamp": "2025-06-09T19:30:45.123456",
-  "component": "frontend",
-  "level": "INFO",
-  "message": "Ação do usuário: document_upload_start",
-  "action": "document_upload_start",
-  "session_id": "uuid-session-1234",
-  "file_name": "nfe_exemplo.xml",
-  "file_type": "application/xml",
-  "file_size": 4096
-}
-```
+Uma classe `DataMasker` foi criada para identificar e substituir padrões de dados sensíveis por marcadores genéricos (ex: `****`). Os padrões incluem, mas não se limitam a:
 
-## Funcionalidades Implementadas
+- Chaves de API (OpenAI, etc.)
+- CNPJs e CPFs
+- Endereços de e-mail
+- Números de telefone
+- Números de cartão de crédito
 
-### **Backend (FastAPI)**
+### SecureJSONFormatter
 
-#### Middleware de Logging
-- **LoggingMiddleware**: Log automático de requisições/respostas
-- **ErrorHandlingMiddleware**: Captura e log de erros não tratados
-- Request ID único para rastreamento
-- Headers de resposta com informações de debug
+Um formatter customizado (`SecureJSONFormatter`) é utilizado para garantir que todos os campos do log sejam passados pelo `DataMasker` antes de serem serializados para JSON. Isso assegura que, mesmo que um dado sensível seja acidentalmente incluído em uma mensagem de log, ele será mascarado.
 
-#### Endpoints com Logging
-- `GET /`: Status da aplicação
-- `GET /health`: Verificação de saúde
-- `POST /process-document`: Processamento de documentos
-- `GET /supported-formats`: Formatos suportados
-- `GET /logs/recent`: Visualização de logs recentes
+### Permissões de Arquivo
 
-#### Document Agent Logging
-- Log de início/fim de processamento
-- Logs específicos por tipo (XML, PDF, Imagem)
-- Métricas de performance
-- Detalhes do resultado (valor total, itens, etc.)
+Os arquivos de log são configurados com permissões restritivas (modo `600` em sistemas Unix-like) para que apenas o proprietário do processo tenha acesso de leitura e escrita, protegendo contra acesso não autorizado.
 
-### **Frontend (Streamlit)**
+## 🔄 Rotação de Logs
 
-#### Logging de Ações do Usuário
-- Carregamento de páginas
-- Upload de arquivos
-- Verificação de status da API
-- Resultados de processamento
-- Erros de conexão
+Para evitar que os arquivos de log cresçam indefinidamente e consumam todo o espaço em disco, a rotação de logs está configurada usando `logging.handlers.RotatingFileHandler`.
 
-#### Session Tracking
-- ID de sessão único por usuário
-- Rastreamento de ações por sessão
-- Logs estruturados com contexto
+- **maxBytes**: Define o tamanho máximo de um arquivo de log antes que ele seja rotacionado.
+- **backupCount**: Define quantos arquivos de log antigos serão mantidos.
 
-## Configuração
+Quando um arquivo de log atinge o tamanho máximo, ele é renomeado (ex: `app.log.1`, `app.log.2`, etc.) e um novo arquivo de log vazio (`app.log`) é criado. Os arquivos mais antigos são removidos após atingir o `backupCount`.
 
-### **Variáveis de Ambiente**
-```bash
-# Nível de logging (DEBUG, INFO, WARNING, ERROR)
-LOG_LEVEL=INFO
+## 📈 Monitoramento com Prometheus
 
-# Caminho personalizado para logs
-LOG_FILE_PATH=logs/custom.log
-```
+Além dos logs, a aplicação backend expõe métricas no formato Prometheus para monitoramento em tempo real do desempenho e saúde da API.
 
-### **Configuração Programática**
-```python
-from backend.app.logging_config import AppLogger
+### Endpoint `/metrics`
 
-# Logger customizado
-logger = AppLogger(
-    name="meu_modulo",
-    level=logging.DEBUG,
-    log_to_file=True,
-    log_file_path="logs/custom.log"
-)
-```
+Um endpoint `/metrics` está disponível na API (geralmente em `http://localhost:8000/metrics`) que fornece dados em um formato que pode ser coletado por um servidor Prometheus. As métricas incluem:
 
-## Monitoramento
+- `http_requests_total`: Contador do total de requisições HTTP recebidas.
+- `http_request_duration_seconds`: Histograma da duração das requisições HTTP.
+- `document_processing_total`: Contador do total de documentos processados (por tipo e status - sucesso/falha).
+- `document_processing_duration_seconds`: Histograma da duração do processamento de documentos (por tipo).
+- `cache_hits_total`: Contador de acertos no cache.
+- `cache_misses_total`: Contador de falhas no cache.
+- `api_health_status`: Gauge indicando a saúde da API (1 para saudável, 0 para não saudável).
 
-### **Endpoint de Logs**
-```bash
-# Últimos 100 logs
-GET /logs/recent
+### Integração com Prometheus e Grafana
 
-# Últimos 50 logs
-GET /logs/recent?limit=50
-```
+Você pode configurar um servidor Prometheus para coletar métricas do endpoint `/metrics` da sua aplicação. Em seguida, usar o Grafana para criar dashboards visualizando essas métricas, permitindo monitorar:
 
-### **Análise de Logs**
-```bash
-# Filtrar por nível de erro
-grep '"level":"ERROR"' logs/contabilidade_agentes.log
+- Taxa de requisições e latência.
+- Número de documentos processados por tipo e status.
+- Taxa de erros no processamento.
+- Uso do cache.
+- Saúde geral da API.
 
-# Filtrar por operação específica
-grep '"operation":"document_processing"' logs/contabilidade_agentes.log
+## ☁️ Integração com Ferramentas de Agregação de Logs
 
-# Análise de performance
-grep '"execution_time"' logs/contabilidade_agentes.log | jq '.execution_time'
-```
+O formato de log JSON estruturado facilita a integração com ferramentas de agregação de logs baseadas em nuvem ou on-premise, como:
 
-## Métricas Disponíveis
+- **ELK Stack (Elasticsearch, Logstash, Kibana)**: Logstash pode coletar os arquivos de log, parsear o JSON e enviar para o Elasticsearch para indexação. Kibana é usado para visualização e análise.
+- **Grafana Loki**: Loki é um sistema de agregação de logs otimizado para logs estruturados. Promtail (agente de coleta) pode enviar os logs JSON para o Loki, e o Grafana é usado para visualização com o LogQL.
+- **Cloud Providers**: AWS CloudWatch Logs, Google Cloud Logging, Azure Monitor Logs, etc., todos suportam ingestão de logs JSON.
 
-### **Performance**
-- Tempo de execução por operação
-- Tempo de resposta da API
-- Tempo de processamento por tipo de documento
+Para integrar, configure o agente de coleta da ferramenta escolhida para ler os arquivos de log gerados pela aplicação (`logs/app.log` por padrão) e enviar para o sistema centralizado.
 
-### **Uso**
-- Número de documentos processados
-- Tipos de arquivo mais utilizados
-- Taxa de sucesso/erro
+## 🛠️ Configuração do Logging
 
-### **Erros**
-- Tipos de erro mais comuns
-- Operações com mais falhas
-- Rastreamento de problemas por request_id
+O sistema de logging é configurado através do arquivo `logging_config.py` e utiliza as configurações definidas em `config/settings.py`. Você pode ajustar o nível de log, tamanho dos arquivos de rotação e número de backups através das variáveis de ambiente ou do arquivo `.env`.
 
-## Boas Práticas
+- `LOG_LEVEL`: Define o nível mínimo de log a ser registrado (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+- `LOG_FILE_PATH`: Caminho para o arquivo de log.
+- `LOG_FILE_MAX_BYTES`: Tamanho máximo do arquivo de log em bytes.
+- `LOG_FILE_BACKUP_COUNT`: Número de arquivos de backup a serem mantidos.
 
-### **Para Desenvolvedores**
-1. Use as funções de conveniência: `log_operation_start()`, `log_operation_success()`, `log_operation_error()`
-2. Inclua contexto relevante nos logs extras
-3. Use request_id para rastreamento de requisições
-4. Log tanto sucessos quanto falhas
+## ⚠️ Considerações de Segurança
 
-### **Para Operações**
-1. Monitore logs de ERROR regularmente
-2. Analise métricas de performance
-3. Use request_id para debug de problemas específicos
-4. Configure alertas baseados em padrões de log
+- **Não desabilite o mascaramento de dados sensíveis em produção.**
+- **Monitore o acesso aos arquivos de log**, mesmo com permissões restritivas.
+- **Considere criptografar os logs em repouso** se contiverem informações extremamente sensíveis.
+- **Configure alertas** no seu sistema de monitoramento para erros críticos e picos de requisições/erros.
 
-## Exemplos de Uso
+Com este sistema de logging e monitoramento, você terá visibilidade completa sobre o funcionamento da sua aplicação, facilitando a depuração, auditoria e garantia de segurança.
 
-### **Logging Básico**
-```python
-from backend.app.logging_config import log_operation_start, log_operation_success, log_operation_error
-
-# Início de operação
-log_operation_start("minha_operacao", user_id="123", extra_info="valor")
-
-try:
-    # Sua lógica aqui
-    result = processar_algo()
-    
-    # Sucesso
-    log_operation_success("minha_operacao", execution_time=1.23, result_count=5)
-    
-except Exception as e:
-    # Erro
-    log_operation_error("minha_operacao", e, execution_time=0.5)
-```
-
-### **Logging com Contexto**
-```python
-from backend.app.logging_config import get_logger
-
-logger = get_logger("meu_modulo")
-
-logger.info("Processando arquivo", extra={
-    'operation': 'file_processing',
-    'file_name': 'documento.pdf',
-    'file_size': 2048,
-    'user_id': '123'
-})
-```
-
-## Troubleshooting
-
-### **Logs não aparecem**
-1. Verifique se o diretório `logs/` existe
-2. Verifique permissões de escrita
-3. Confirme configuração do nível de log
-
-### **Performance**
-1. Logs são assíncronos por padrão
-2. Rotação automática de logs (implementar se necessário)
-3. Considere usar log aggregation para produção
-
-### **Análise**
-1. Use ferramentas como `jq` para análise JSON
-2. Considere ELK Stack para produção
-3. Implemente dashboards para métricas
-
----
-
-**Nota**: Este sistema de logging fornece visibilidade completa da aplicação, facilitando debug, monitoramento e análise de performance. 

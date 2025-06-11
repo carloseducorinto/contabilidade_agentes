@@ -3,6 +3,7 @@ uvicorn==0.34.0
 langchain==0.3.25
 langchain-openai==0.3.21
 pydantic==2.10.4
+pydantic-settings==2.6.0
 lxml==5.3.0
 pytesseract==0.3.13
 python-multipart==0.0.20
@@ -11,4 +12,25 @@ Pillow==11.2.1
 python-dotenv==1.0.0
 openai>=1.68.2
 reportlab==4.2.5
+
+
+
+prometheus_client==0.22.1
+
+
+# Dependências de teste e qualidade
+pytest==8.4.0
+pytest-cov==6.1.1
+pytest-asyncio==1.0.0
+pytest-mock==3.14.1
+coverage==7.8.2
+black==25.1.0
+flake8==7.2.0
+mypy==1.16.0
+
+
+
+pytest-asyncio
+openai
+
 

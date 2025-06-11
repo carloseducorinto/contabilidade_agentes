@@ -1,307 +1,186 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import uvicorn
 import os
 import time
 from dotenv import load_dotenv
-from .document_ingestion_agent import DocumentIngestionAgent
-from .models import ProcessingResult
-from .logging_config import get_logger, log_operation_start, log_operation_success, log_operation_error, log_file_processing
-from .middleware import setup_middleware
 
-# Load environment variables from .env file
+from .config import get_settings, is_production, get_cors_config
+from .services.async_document_service import AsyncDocumentService
+from .classification_agent import ClassificationAgent # Importar o ClassificationAgent
+from .models.document_models import ProcessingResult, DocumentProcessed # Importar DocumentProcessed
+from .models.classification_models import ClassificationOutput # Importar ClassificationOutput
+from .models.api_models import SupportedFormatsResponse
+from .logging_config import get_logger, log_operation_start, log_operation_success, log_operation_error
+from .middleware import setup_security_middleware
+from .metrics import setup_metrics_endpoint, metrics_middleware, record_document_processing_metrics, record_cache_metrics
+from .utils.cache import start_cache_cleanup_task, get_cache_stats, clear_cache
+
+# Carrega variáveis de ambiente do .env
 load_dotenv()
+
+# Carrega configurações
+settings = get_settings()
 
 # Configuração do logging centralizado
 logger = get_logger("main")
+logger.info("Iniciando aplicação FastAPI com configurações carregadas", extra={
+    "environment": settings.environment,
+    "version": settings.app_version
+})
 
 # Inicialização da aplicação FastAPI
 app = FastAPI(
-    title="Sistema de Contabilidade com Agentes de IA",
+    title=settings.app_name,
     description="API para processamento automatizado de documentos fiscais brasileiros",
-    version="2.0.0"
+    version=settings.app_version,
+    debug=settings.debug
 )
 
-# Configuração CORS para permitir acesso do frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Em produção, especificar domínios específicos
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Configura middlewares de segurança (CORS, Rate Limit, Headers)
+# setup_security_middleware(app)  # Temporarily disabled
 
-# Configuração dos middlewares de logging
-setup_middleware(app)
+# Adiciona middleware de métricas
+# app.middleware("http")(metrics_middleware)  # Temporarily disabled
 
-# Inicialização do agente de ingestão com chave OpenAI
-openai_api_key = os.getenv("OPENAI_API_KEY")
-document_agent = DocumentIngestionAgent(openai_api_key=openai_api_key)
+# Inicialização dos serviços
+try:
+    document_service = AsyncDocumentService(openai_api_key=settings.openai_api_key)
+    classification_agent = ClassificationAgent() # Inicializar o ClassificationAgent
+    logger.info("Serviços de documentos e classificação inicializados com sucesso")
+except Exception as e:
+    logger.critical(f"Falha ao inicializar serviços: {e}")
+    raise
 
-# Log de inicialização
-log_operation_start("application_startup", openai_configured=bool(openai_api_key))
-
-@app.on_event("startup")
-async def startup_event():
-    """Evento de inicialização da aplicação"""
-    # Garante que o diretório de logs existe
-    import pathlib
-    pathlib.Path("logs").mkdir(exist_ok=True)
-    
-    log_operation_success(
-        "application_startup",
-        openai_configured=bool(openai_api_key),
-        api_version="2.0.0"
-    )
-
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Evento de desligamento da aplicação"""
+    logger.info("Aplicação desligando...")
+    # TODO: Adicionar lógica para fechar conexões externas, liberar recursos, etc.
 
 @app.get("/")
-async def root(request: Request = None):
+async def root():
     """Endpoint de status da API"""
-    request_id = getattr(request.state, 'request_id', 'unknown') if request else 'unknown'
-    
-    log_operation_start("root_endpoint", request_id=request_id)
-    
-    response = {
-        "message": "Sistema de Contabilidade com Agentes de IA",
+    logger.debug("Recebida requisição GET / (root)")
+    return {
+        "message": settings.app_name,
         "status": "ativo",
-        "version": "2.0.0",
-        "request_id": request_id
+        "version": settings.app_version,
+        "environment": settings.environment
     }
-    
-    log_operation_success("root_endpoint", request_id=request_id)
-    return response
-
 
 @app.get("/health")
-async def health_check(request: Request = None):
+async def health_check():
     """Endpoint de verificação de saúde da API"""
-    request_id = getattr(request.state, 'request_id', 'unknown') if request else 'unknown'
-    
-    log_operation_start("health_check", request_id=request_id)
-    
-    response = {
+    logger.debug("Recebida requisição GET /health (health check)")
+    return {
         "status": "healthy", 
         "timestamp": time.time(),
-        "request_id": request_id,
-        "openai_configured": bool(openai_api_key)
+        "openai_configured": bool(settings.openai_api_key),
+        "environment": settings.environment,
+        "version": settings.app_version
     }
-    
-    log_operation_success("health_check", request_id=request_id, openai_configured=bool(openai_api_key))
-    return response
-
 
 @app.post("/process-document", response_model=ProcessingResult)
-async def process_document(file: UploadFile = File(...), request: Request = None):
+async def process_document(file: UploadFile = File(...), request: Request = None, background_tasks: BackgroundTasks = None):
     """
-    Processa um documento fiscal (XML, PDF ou Imagem) e retorna dados estruturados
-    
-    Args:
-        file: Arquivo de documento fiscal (NF-e XML, PDF ou imagem JPG/PNG)
-        request: Objeto da requisição FastAPI
-        
-    Returns:
-        ProcessingResult com dados estruturados ou erro
+    Processa um documento fiscal (XML, PDF ou Imagem) e retorna dados estruturados e classificados
     """
-    start_time = time.time()
     request_id = getattr(request.state, 'request_id', 'unknown') if request else 'unknown'
-    
+    logger.info(f"Recebida requisição POST /process-document para arquivo: {file.filename}", extra={"request_id": request_id})
+    operation_id = log_operation_start("process_document_endpoint", agent="main", request_id=request_id, file_name=file.filename)
     try:
-        # Validação do tipo de arquivo
-        if not file.filename:
-            log_operation_error(
-                "document_validation", 
-                ValueError("Nome do arquivo não fornecido"),
-                request_id=request_id
-            )
-            raise HTTPException(status_code=400, detail="Nome do arquivo não fornecido")
-        
-        # Determina o tipo do arquivo pela extensão
-        file_extension = file.filename.lower().split('.')[-1]
-        supported_types = ['xml', 'pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif']
-        
-        if file_extension not in supported_types:
-            log_operation_error(
-                "document_validation",
-                ValueError(f"Tipo de arquivo não suportado: {file_extension}"),
-                request_id=request_id,
-                file_name=file.filename,
-                file_type=file_extension
-            )
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Tipo de arquivo não suportado: {file_extension}. Suportados: {', '.join(supported_types).upper()}"
-            )
-        
-        # Lê o conteúdo do arquivo
         file_content = await file.read()
-        file_size = len(file_content)
+        file_type = file.filename.split(".")[-1].lower() if file.filename else "unknown"
+        logger.debug(f"Arquivo recebido: {file.filename} ({file_type}), tamanho: {len(file_content)} bytes")
         
-        if not file_content:
-            log_operation_error(
-                "document_validation",
-                ValueError("Arquivo vazio"),
-                request_id=request_id,
-                file_name=file.filename
-            )
-            raise HTTPException(status_code=400, detail="Arquivo vazio")
-        
-        # Log de processamento de arquivo
-        log_file_processing(
-            file_name=file.filename,
-            file_size=file_size,
-            file_type=file_extension,
-            request_id=request_id
+        # 1. Processamento do Documento (Extração de Dados)
+        processing_result = await document_service.process_document(
+            file_content=file_content,
+            file_type=file_type,
+            filename=file.filename,
+            background_tasks=background_tasks
         )
-        
-        # Log de início do processamento
-        log_operation_start(
-            "document_processing",
-            request_id=request_id,
-            file_name=file.filename,
-            file_size=file_size,
-            file_type=file_extension
+
+        if not processing_result.success:
+            logger.warning(f"Processamento de extração falhou para {file.filename}: {processing_result.error}", extra={"request_id": request_id})
+            log_operation_error(operation_id, processing_result.error, agent="main", request_id=request_id, file_name=file.filename, status="extraction_failed")
+            raise HTTPException(status_code=422, detail=processing_result.error)
+
+        # Converter o resultado para DocumentProcessed para passar ao ClassificationAgent
+        doc_processed = DocumentProcessed(
+            document_id=processing_result.document_id,
+            document_type=processing_result.document_type,
+            extracted_data=processing_result.extracted_data
         )
-        
-        # Processa o documento usando o agente
-        result = document_agent.process_document(file_content, file_extension)
-        
-        execution_time = time.time() - start_time
-        
-        if result.success:
-            # Log de sucesso
-            log_operation_success(
-                "document_processing",
-                execution_time=execution_time,
-                request_id=request_id,
-                file_name=file.filename,
-                file_size=file_size,
-                file_type=file_extension,
-                document_type=result.data.documento if result.data else None,
-                total_value=result.data.valor_total if result.data else None,
-                items_count=len(result.data.itens) if result.data and result.data.itens else 0
-            )
-            return result
-        else:
-            # Log de erro no processamento
-            log_operation_error(
-                "document_processing",
-                Exception(result.error_message),
-                execution_time=execution_time,
-                request_id=request_id,
-                file_name=file.filename,
-                file_size=file_size,
-                file_type=file_extension
-            )
-            raise HTTPException(status_code=422, detail=result.error_message)
-            
-    except HTTPException:
-        raise
+
+        # 2. Classificação do Documento
+        logger.info(f"Iniciando classificação para documento ID: {doc_processed.document_id}", extra={"request_id": request_id})
+        classified_output = await classification_agent.classify_document(doc_processed)
+        logger.info(f"Classificação bem-sucedida para {file.filename}", extra={"request_id": request_id})
+
+        # 3. Combinar resultados e retornar
+        final_result = ProcessingResult(
+            document_id=processing_result.document_id,
+            document_type=processing_result.document_type,
+            extracted_data=processing_result.extracted_data,
+            classification_data=classified_output.model_dump(), # Adicionar dados de classificação
+            success=True,
+            message="Documento processado e classificado com sucesso."
+        )
+
+        logger.info(f"Processamento e classificação bem-sucedidos para {file.filename}", extra={"request_id": request_id})
+        log_operation_success(operation_id, agent="main", request_id=request_id, file_name=file.filename, status="success")
+        return final_result
+
+    except HTTPException as e:
+        logger.error(f"HTTPException ao processar {file.filename}: {e.detail}", extra={"request_id": request_id})
+        log_operation_error(operation_id, str(e.detail), agent="main", request_id=request_id, file_name=file.filename, status="failed")
+        raise e
     except Exception as e:
-        execution_time = time.time() - start_time
-        log_operation_error(
-            "document_processing",
-            e,
-            execution_time=execution_time,
-            request_id=request_id,
-            file_name=file.filename if file else "unknown",
-            file_size=file_size if 'file_size' in locals() else 0
-        )
-        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+        logger.critical(f"Erro inesperado ao processar {file.filename}: {e}", extra={"request_id": request_id})
+        log_operation_error(operation_id, str(e), agent="main", request_id=request_id, file_name=file.filename, status="failed")
+        raise HTTPException(status_code=500, detail=f"Erro interno do servidor: {str(e)}")
 
-
-@app.get("/supported-formats")
-async def get_supported_formats(request: Request = None):
+@app.get("/supported-formats", response_model=SupportedFormatsResponse)
+async def get_supported_formats(request: Request):
     """Retorna os formatos de documento suportados"""
-    request_id = getattr(request.state, 'request_id', 'unknown') if request else 'unknown'
-    
-    log_operation_start("supported_formats", request_id=request_id)
-    
-    response = {
-        "supported_formats": [
-            {
-                "format": "XML",
-                "description": "Nota Fiscal Eletrônica (NF-e) em formato XML",
-                "status": "implementado"
-            },
-            {
-                "format": "PDF", 
-                "description": "Nota Fiscal Eletrônica (NF-e) em formato PDF (via OCR)",
-                "status": "implementado"
-            },
-            {
-                "format": "IMAGE",
-                "description": "Nota Fiscal Eletrônica (NF-e) em formato de imagem (JPG, PNG, WEBP, GIF via LLM Vision)",
-                "status": "implementado" if openai_api_key else "requer_configuracao"
-            }
-        ],
-        "request_id": request_id
-    }
-    
-    log_operation_success(
-        "supported_formats", 
-        request_id=request_id, 
-        formats_count=len(response["supported_formats"]),
-        openai_configured=bool(openai_api_key)
-    )
-    
-    return response
+    request_id = getattr(request.state, 'request_id', 'unknown')
+    logger.info("Recebida requisição GET /supported-formats", extra={"request_id": request_id})
+    log_operation_start("supported_formats_endpoint", agent="main", request_id=request_id)
+    formats_info = await document_service.get_supported_formats()
+    logger.debug(f"Formatos suportados retornados: {formats_info['formats']}")
+    log_operation_success("supported_formats_endpoint", agent="main", request_id=request_id, formats_count=len(formats_info["formats"]))
+    return SupportedFormatsResponse(**formats_info)
 
+@app.get("/cache/clear")
+async def clear_app_cache(request: Request):
+    """Limpa o cache da aplicação"""
+    request_id = getattr(request.state, 'request_id', 'unknown')
+    logger.info("Recebida requisição GET /cache/clear", extra={"request_id": request_id})
+    log_operation_start("clear_cache_endpoint", agent="main", request_id=request_id)
+    await clear_cache()
+    logger.info("Cache limpo com sucesso", extra={"request_id": request_id})
+    log_operation_success("clear_cache_endpoint", agent="main", request_id=request_id)
+    return {"message": "Cache limpo com sucesso!", "request_id": request_id}
 
-@app.get("/logs/recent")
-async def get_recent_logs(request: Request = None, limit: int = 100):
-    """Retorna os logs mais recentes da aplicação"""
-    request_id = getattr(request.state, 'request_id', 'unknown') if request else 'unknown'
-    
-    log_operation_start("logs_retrieval", request_id=request_id, limit=limit)
-    
-    try:
-        import pathlib
-        log_file = pathlib.Path("logs/contabilidade_agentes.log")
-        
-        if not log_file.exists():
-            return {"logs": [], "message": "Arquivo de log não encontrado"}
-        
-        # Lê as últimas linhas do arquivo
-        with open(log_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            recent_lines = lines[-limit:] if len(lines) > limit else lines
-        
-        # Tenta fazer parse das linhas como JSON
-        logs = []
-        for line in recent_lines:
-            try:
-                log_entry = json.loads(line.strip())
-                logs.append(log_entry)
-            except json.JSONDecodeError:
-                # Se não for JSON válido, adiciona como texto simples
-                logs.append({"message": line.strip(), "level": "INFO"})
-        
-        log_operation_success(
-            "logs_retrieval", 
-            request_id=request_id, 
-            logs_count=len(logs),
-            limit=limit
-        )
-        
-        return {
-            "logs": logs,
-            "count": len(logs),
-            "request_id": request_id
-        }
-        
-    except Exception as e:
-        log_operation_error("logs_retrieval", e, request_id=request_id, limit=limit)
-        raise HTTPException(status_code=500, detail=f"Erro ao recuperar logs: {str(e)}")
+# Configura o endpoint de métricas Prometheus
+setup_metrics_endpoint(app)
 
+# NOTE: O evento de startup está comentado, mas pode ser reativado para inicializações avançadas
+# @app.on_event("startup")
+# async def startup_event():
+#     ...
 
 if __name__ == "__main__":
+    logger.info("Iniciando servidor Uvicorn via main.py (__main__)")
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        workers=settings.api_workers,
+        log_level=settings.log_level.lower()
     )
 
