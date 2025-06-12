@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-proj-HMJPDttv6GAtdL5cV2GDTo-twyM_b017aV0NYmz694UQ91B49iw6q_qTkz4AZRH-93XAYIt9bLT3BlbkFJ6Vzl_mNE0GtttucCHRBd8wpwmsFU02NfkDcd3usp3Nk4etslTIBc2MZFHMsEHEzR...}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-proj-HMJPDttv6GAtdL5cV2GDTo-twyM_b017aV0MsEHEzR...}
       - ENVIRONMENT=${ENVIRONMENT:-production}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8501}
